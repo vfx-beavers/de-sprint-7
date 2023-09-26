@@ -21,15 +21,15 @@
     `/user/cgbeavers/data/analytics/proj7_repartition`    - события разложенные по партициям из STG
     `/user/cgbeavers/data/analytics/proj7/cities/geo.csv` - данные по названиям и координатам городов 
 
-    Предобработка и загрузка в ODS:
+1.3 Предобработка и загрузка в ODS:
     `/src/scripts/parquet_event_pre_process.py`
 
-1.3 Analytics sandbox layer:
+1.4 Analytics sandbox layer:
     `/user/cgbeavers/data/prod/user_mart`         - витрина в разрезе пользователей
     `/user/cgbeavers/data/prod/zones_mart`        - витрина в разрезе зон
     `/user/cgbeavers/data/prod/geo_activity_mart` - витрина для рекомендации друзей
 
-1.4 Формат данных:
+1.5 Формат данных:
 
 STG/events    - `parquet` 
 STG/geo.csv   - `csv` 
