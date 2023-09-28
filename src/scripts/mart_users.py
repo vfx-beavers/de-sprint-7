@@ -59,8 +59,7 @@ def main() -> None:
       .select('event.message_from'
             ,F.date_trunc("minute",F.coalesce(F.col('event.datetime'),F.col('event.message_ts'))).alias("date")
             ,'lat', 'lon').distinct()
-      .selectExpr('message_from as user_id', "date",'lat', 'lon')
-      .persist())
+      .selectExpr('message_from as user_id', "date",'lat', 'lon')).persist()
 #    print('df_message')
 #    df_message.show()
     
@@ -69,12 +68,12 @@ def main() -> None:
     df_csv = df_csv.withColumn("lat",F.regexp_replace("lat", ",", ".")).withColumn("lng",F.regexp_replace("lng",",","."))
     df_citygeodata = (df_csv.select(F.col("id").alias("city_id"),(F.col("city"))
                                    .alias("city_name"),(F.col("lat")).cast('double').alias("city_lat"),(F.col("lng"))
-                                   .cast('double').alias("city_lon")).persist())
+                                   .cast('double').alias("city_lon"))).persist()
 #    print('df_citygeodata')
 #    df_citygeodata.show()
     
 # События умноженные на список городов
-    df_message_and_citygeodata = (df_message.crossJoin(df_citygeodata.hint("broadcast")).persist())    
+    df_message_and_citygeodata = (df_message.crossJoin(df_citygeodata.hint("broadcast"))).persist()
 #    print('df_message_and_citygeodata')
 #    df_message_and_citygeodata.show()
 
@@ -86,7 +85,7 @@ def main() -> None:
         Window.partitionBy("user_id","date").orderBy(F.col("distance"))
         )).filter(F.col("row") ==1)
         .drop("row", "distance")
-        .persist())
+        ).persist()
 #    print('df_message_and_distance')
 #    df_message_and_distance.show()
     
@@ -96,7 +95,7 @@ def main() -> None:
         .filter(F.col("row") == 1)
         .drop("row", "distance")
         .withColumnRenamed("city_name", "act_city")
-        .persist())
+        ).persist()
 #    print('df_act_city')
 #    df_act_city.show()
 
@@ -106,7 +105,7 @@ def main() -> None:
         .withColumn('city_name_lag_1_desc',F.lag('city_name',-1,'none')
         .over(Window().partitionBy('user_id').orderBy(F.col('date').desc())))
         .filter(F.col('city_name') != F.col('city_name_lag_1_desc'))
-        .persist())
+        ).persist()
 #    print('df_change')
 #    df_change.show()
 
@@ -119,7 +118,7 @@ def main() -> None:
         .over(Window.partitionBy("user_id").orderBy(F.col("date").desc())))
         .filter(F.col('row') == 1)
         .drop('date','city_name_lag_1_desc','date_lag','row','date_diff','max_date')
-        .persist())
+        ).persist()
 #    print('df_home_city')
 #    df_home_city.show()
     
@@ -130,7 +129,7 @@ def main() -> None:
     df_travel_array = (df_change
         .groupBy("user_id")
         .agg(F.collect_list('city_name').alias('travel_array'))
-        .persist())
+        ).persist()
 #    print('df_travel_array')
 #    df_travel_array.show()
 
@@ -146,7 +145,7 @@ def main() -> None:
                                 .withColumn('timezone', F.concat(F.lit('Australia'), F.lit('/'),  F.col('city_true')))\
                                 .withColumn('local_time', F.from_utc_timestamp(F.col('TIME'), F.col('timezone')))
                      .drop("timezone", "date", "act_city")
-                     .persist())
+                     ).persist()
 #    df_local_time.show()
 
 # витрина в разрезе пользователей. объединения всех метрик

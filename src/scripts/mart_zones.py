@@ -45,7 +45,6 @@ def main() -> None:
     mart_df = mart_zones(events_with_geo_df)
     write = writer(mart_df, output_path)  
 
-    return write
 
 # df городов, градусы в радианы, сброс колонок
 def cities(cities_data_path: str, sql) -> DataFrame:
@@ -57,8 +56,7 @@ def cities(cities_data_path: str, sql) -> DataFrame:
             .withColumn('lat_n_rad',F.col('lat_n')*F.lit(coef_deg_rad))
             .withColumn('lng_n_rad',F.col('lng_n')*F.lit(coef_deg_rad))
             .drop("lat","lng","lat_n","lng_n")
-            .persist()
-            )
+            ).persist()
     
     return cities_df
 
@@ -70,8 +68,7 @@ def events_filtered(events_path: str, sql) -> DataFrame:
                   .withColumn('msg_lng_rad',F.col('lon')*F.lit(coef_deg_rad))
                   .where('msg_lat_rad IS NOT NULL and msg_lng_rad IS NOT NULL')
                   .drop("lat","lon")
-                  .persist()
-                  )
+                  ).persist()
     
     return events_filtered
 
@@ -95,8 +92,7 @@ def events_with_geo(events_filtered_df: DataFrame, cities_df: DataFrame) -> Data
         .drop('row_number', 'distance')
         .withColumn('event_id', F.monotonically_increasing_id())
         .selectExpr("event.message_from as user_id","event_id", "event_type", "id as zone_id", "city", "date")
-        .persist()
-        )
+        ).persist()
 
     return events_with_geo_df
 
@@ -132,7 +128,7 @@ def mart_zones(events_with_geo_df: DataFrame) -> DataFrame:
           .select("month", "week", "zone_id", "week_message", "week_reaction", "week_subscription", "week_user", "month_message", "month_reaction", "month_subscription", "month_user")
           .distinct()
           )
-    df.show(20, False)
+#    df.show(20, False)
     return df
     
 def writer(df, output_path):

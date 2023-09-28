@@ -64,8 +64,7 @@ def cities(cities_data_path: str, sql) -> DataFrame:
             .withColumn('lat_n_rad',F.col('lat_n')*F.lit(coef_deg_rad))
             .withColumn('lng_n_rad',F.col('lng_n')*F.lit(coef_deg_rad))
             .drop("lat","lng","lat_n","lng_n")
-            .persist()
-            )
+            ).persist()
     
     return cities_df
 
@@ -84,8 +83,7 @@ def events_filtered_from(events_path: str, sql) -> DataFrame:
                   .drop("lat","lon")
                   .where("message_from IS NOT NULL")
                   #.where("subscription_channel IS NOT NULL") #для проверки вообще наличия подписок
-                  .persist()
-                  )
+                  ).persist()
     
     window = Window().partitionBy('message_from').orderBy(F.col('date').desc())
 
@@ -94,8 +92,7 @@ def events_filtered_from(events_path: str, sql) -> DataFrame:
         .withColumn("row_number", F.row_number().over(window))
         .filter(F.col('row_number')==1)
         .drop("row_number")
-        .persist()
-    )
+    ).persist()
     
     return events_filtered_from
 
@@ -114,8 +111,7 @@ def events_filtered_to(events_path: str, sql) -> DataFrame:
                   .drop("lat","lon")
                   .where("message_to IS NOT NULL")
                   #.where("subscription_channel IS NOT NULL") #для проверки вообще наличия подписок
-                  .persist()
-                  )
+                  ).persist()
     
     window = Window().partitionBy('message_to').orderBy(F.col('date').desc())
 
@@ -135,8 +131,7 @@ def events_subscriptions(events_path: str, sql) -> DataFrame:
                   .selectExpr('event.user as user','event.subscription_channel as ch') 
                   .where('user is not null and ch is not null')
                   .groupBy('user').agg(F.collect_list(F.col('ch')).alias('chans'))
-                  .persist()
-                  )
+                  ).persist()
     
     return events_subscription
 
@@ -158,7 +153,7 @@ def events_union_sender_reciever(events_path: str, sql) -> DataFrame:
         df_sender_reciever
         .union(df_reciever_sender)
         .distinct()
-        )
+        ).persist()
     
 # уникальные комбинации отправитель-получатель 
     union_dfs = (union_dfs
@@ -183,8 +178,7 @@ def local_time_f(events_path: str, sql) -> DataFrame:
             .filter(F.col('row_number')==1)
             .withColumn("TIME",F.col("datetime").cast("Timestamp"))
             .selectExpr("user_id as user", "Time")
-            .persist()
-            )
+            ).persist()
     
     return times_w
 
@@ -206,8 +200,7 @@ def combine_df(events_filtered_from: DataFrame, events_filtered_to: DataFrame, c
         .selectExpr("message_id_from as user_left", "message_id_to as user_right",
                     "middle_point_lat_rad", "middle_point_lng_rad")
         .distinct()
-        .persist()
-        )
+        ).persist()
     
 # Прикручивание городов
     result = (
@@ -220,8 +213,7 @@ def combine_df(events_filtered_from: DataFrame, events_filtered_to: DataFrame, c
             F.pow(F.sin((F.col('middle_point_lng_rad') - F.col('lng_n_rad'))/F.lit(2)),2)
         )))
         .select("user_left", "user_right", "id", "city", "distance")
-        .persist()
-        )
+        ).persist()
     
     window = Window().partitionBy("user_left", "user_right").orderBy(F.col('distance').asc())
 
@@ -234,8 +226,7 @@ def combine_df(events_filtered_from: DataFrame, events_filtered_to: DataFrame, c
         .withColumn("timezone",F.concat(F.lit("Australia/"),F.col('city')))
         .withColumnRenamed("city", "zone_id")
         .withColumn('sender_reciever_all', F.concat(result.user_left, F.lit("-"), result.user_right))
-        .persist()
-    )
+    ).persist()
 
 # Проверка что пользователи не пересекались
     result = result.join(union_dfs, result.sender_reciever_all == union_dfs.sender_reciever_existing, "leftanti")
@@ -262,7 +253,7 @@ def combine_df(events_filtered_from: DataFrame, events_filtered_to: DataFrame, c
         .drop("timezone", 'user', 'Time')
         .select("user_left", "user_right", "processed_dttm", "zone_id", "local_time")
     )
-    result.show()
+#    result.show()
     return result
 
 def writer(df, output_path):
