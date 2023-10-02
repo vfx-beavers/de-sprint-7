@@ -1,5 +1,7 @@
 import sys
 import os
+import lib
+from pyspark.sql.functions import col, row_number, current_date, date_format
 import pyspark.sql.functions as F
 os.environ['HADOOP_CONF_DIR'] = '/etc/hadoop/conf'
 os.environ['YARN_CONF_DIR'] = '/etc/hadoop/conf'
@@ -17,9 +19,8 @@ coef_deg_rad = pi/180
 from pyspark import SparkContext, SparkConf
 from pyspark.sql import SQLContext, SparkSession, DataFrame
 from pyspark.sql.window import Window 
-from pyspark.sql.types import DateType
-from datetime import datetime, timedelta
-
+from pyspark.sql.types import *
+from datetime import datetime
 
 
 def main() -> None:
@@ -34,233 +35,162 @@ def main() -> None:
     #output_path = "/user/cgbeavers/data/prod/geo_activity_mart/"
 
 # сессия
-#    spark = SparkSession.builder \
-#                    .master("local") \
-#                    .appName("p7_mm") \
-#                    .getOrCreate()
-    conf = SparkConf().setAppName(f"mart_geo_activity")
+#   spark = SparkSession.builder \
+#                    .master("yarn") \
+#                    .config("spark.driver.memory", "4g") \
+#                    .config("spark.driver.cores", 2) \
+#                    .appName("p7") \
+ #                   .getOrCreate()
+    conf = SparkConf().setAppName("mart_geo_activity")
     sc = SparkContext(conf=conf)
     sql = SQLContext(sc)
 
     cities_df = cities(cities_data_path, sql)
-    events_filtered_df_from = events_filtered_from(events_path, sql)
-    events_filtered_df_to = events_filtered_to(events_path, sql)
-    events_subscriptions_df = events_subscriptions(events_path, sql)
-    events_union_sender_reciever_df = events_union_sender_reciever(events_path, sql)
+    events_filtered_df = events_filtered(events_path, sql)
+    city_events_data_raw_df = city_events_data_raw(cities_df, events_filtered_df)
+    city_events_data_df = city_events_data(city_events_data_raw_df)
+    subscribers_with_distance_df = subscribers_with_distance(city_events_data_df)
+    non_tinder_users_df = non_tinder_users(city_events_data_df)
     local_time_df = local_time_f(events_path, sql)
-    combine_dfs = combine_df(events_filtered_df_from, events_filtered_df_to, cities_df, events_subscriptions_df, events_union_sender_reciever_df, local_time_df)
-    write = writer(combine_dfs, output_path)
-
-    return write
+    geo_activity_mart_df = geo_activity_mart(city_events_data_df, local_time_df)
+    write = writer(geo_activity_mart_df, output_path)
 
 
 # df городов, градусы в радианы, сброс колонок
 def cities(cities_data_path: str, sql) -> DataFrame:
     cities_df = (sql.read.option("header", True)
             .option("delimiter", ";")
+            .option("inferSchema", True)
             .csv(f'{cities_data_path}')
             .withColumn('lat_n', F.regexp_replace('lat', ',' , '.').cast('double'))
             .withColumn('lng_n', F.regexp_replace('lng', ',' , '.').cast('double'))
-            .withColumn('lat_n_rad',F.col('lat_n')*F.lit(coef_deg_rad))
-            .withColumn('lng_n_rad',F.col('lng_n')*F.lit(coef_deg_rad))
-            .drop("lat","lng","lat_n","lng_n")
-            ).persist()
+            .withColumn('city_lat',F.col('lat_n')*F.lit(coef_deg_rad))
+            .withColumn('city_long',F.col('lng_n')*F.lit(coef_deg_rad))
+            .select('id', 'city', 'city_lat', 'city_long'))
     
+#    print('cities_df')
+#    cities_df.show(5)
     return cities_df
 
 
-# df фильтрованных событий от кого, градусы в радианы, сброс колонок
-def events_filtered_from(events_path: str, sql) -> DataFrame:
-    events_filtered_from = (sql
+# df фильтрованных событий, градусы в радианы, сброс колонок
+def events_filtered(events_path: str, sql) -> DataFrame:
+    events_filtered_df = (sql
                   .read.parquet(f'{events_path}')
-                  .where('event_type = "message"')
-                  #.where('date >= "2022-05-01" and date <= "2022-05-01"') #для ускорения тестов
-                  .selectExpr("event.message_id as message_id_from", "event.message_from", 
-                          "event.subscription_channel","lat", "lon", "date")
-                  .withColumn("msg_lat_rad_from",F.col('lat')*F.lit(coef_deg_rad))
-                  .withColumn('msg_lng_rad_from',F.col('lon')*F.lit(coef_deg_rad))
-                  .where('msg_lat_rad_from IS NOT NULL and msg_lng_rad_from IS NOT NULL')
-                  .drop("lat","lon")
-                  .where("message_from IS NOT NULL")
-                  #.where("subscription_channel IS NOT NULL") #для проверки вообще наличия подписок
-                  ).persist()
+#                  .where("event_type ='subscription'")
+#                  .where("event.message_from IS NOT NULL")
+                  .withColumn('lat',F.col('lat')*F.lit(coef_deg_rad))
+                  .withColumn('lon',F.col('lon')*F.lit(coef_deg_rad))
+                  .where('lat IS NOT NULL and lon IS NOT NULL')
+                  .select('event', 'event_type', 'date', 'lat', 'lon'))
     
-    window = Window().partitionBy('message_from').orderBy(F.col('date').desc())
-
-    events_filtered_from = (
-        events_filtered_from
-        .withColumn("row_number", F.row_number().over(window))
-        .filter(F.col('row_number')==1)
-        .drop("row_number")
-    ).persist()
-    
-    return events_filtered_from
+#    print('events_filtered_df')
+#    events_filtered_df.show(5)
+    return events_filtered_df
 
 
-# df фильтрованных событий кому, градусы в радианы, сброс колонок
-def events_filtered_to(events_path: str, sql) -> DataFrame:
-    events_filtered_to = (sql
-                  .read.parquet(f'{events_path}')
-                  .where('event_type = "message"')
-                  #.where('date >= "2022-05-01" and date <= "2022-05-01"') #для ускорения тестов
-                  .selectExpr("event.message_id as message_id_to", "event.message_to", 
-                          "event.subscription_channel","lat", "lon", "date")
-                  .withColumn("msg_lat_rad_to",F.col('lat')*F.lit(coef_deg_rad))
-                  .withColumn('msg_lng_rad_to',F.col('lon')*F.lit(coef_deg_rad))
-                  .where('msg_lat_rad_to IS NOT NULL and msg_lng_rad_to IS NOT NULL')
-                  .drop("lat","lon")
-                  .where("message_to IS NOT NULL")
-                  #.where("subscription_channel IS NOT NULL") #для проверки вообще наличия подписок
-                  ).persist()
+# кросс событий на города
+def city_events_data_raw(cities_df: DataFrame, events_filtered_df: DataFrame) -> DataFrame:
+    city_events_data_raw_df = events_filtered_df.crossJoin(cities_df)
     
-    window = Window().partitionBy('message_to').orderBy(F.col('date').desc())
-
-    events_filtered_to = (
-        events_filtered_to
-        .withColumn("row_number", F.row_number().over(window))
-        .filter(F.col('row_number')==1)
-        .drop("row_number")
-    )
-    
-    return events_filtered_to
+#    city_events_data_raw_df.show(5)
+    return city_events_data_raw_df
 
 
-def events_subscriptions(events_path: str, sql) -> DataFrame:
-    events_subscription = (sql
-                  .read.parquet(f'{events_path}')
-                  .selectExpr('event.user as user','event.subscription_channel as ch') 
-                  .where('user is not null and ch is not null')
-                  .groupBy('user').agg(F.collect_list(F.col('ch')).alias('chans'))
-                  ).persist()
+# события города и дистанция
+def city_events_data(city_events_data_raw_df: DataFrame) -> DataFrame:
+    events = city_events_data_raw_df
     
-    return events_subscription
+    city_events_data_df = (lib.distance(data=events, first_lat='lat', second_lat='city_lat', first_lon='lon', second_lon='city_long') \
+        .select('event', 'event_type', 'id', 'city', 'date', 'lat', 'lon', 'distanse') \
+        .withColumn("row_number", row_number().over(Window.partitionBy("event").orderBy("distanse"))) \
+        .where("row_number=1") #.drop('row_number')
+       ).persist()
+    
+#    print('city_events_data_df')
+#    city_events_data_df.show(5)
+    return city_events_data_df
+    
+# проверка подписок и расстояния между пользователями
+def subscribers_with_distance(city_events_data_df: DataFrame):
+    user_sub = city_events_data_df \
+        .where("event_type ='subscription'") \
+        .select(F.col('event.user').alias('user_left'), 'event.subscription_channel', F.col('lat').alias('user_lat'),
+                F.col('lon').alias('user_lon'), 'id', 'city')
+    user_sub2 = user_sub.select(col('user_left').alias('user_right'), 'subscription_channel',
+                                col('user_lat').alias('contact_lat'), col('user_lon').alias('contact_lon'),
+                                col('id').alias('r_u_id'), col('city').alias('c_city'))
 
+    all_subscribers = user_sub.join(user_sub2, 'subscription_channel', 'inner').where('user_left < user_right').distinct()
+    subscribers_with_distance_df = (lib.distance(data=all_subscribers, first_lat='user_lat', second_lat='contact_lat',
+                                              first_lon='user_lon', second_lon='contact_lon').where('distanse is not null').where(
+        'distanse < 1.0').select('user_left', 'user_right', 'id', 'city')).persist()
+    
+#    print('subscribers_with_distance_df')
+#    subscribers_with_distance_df.show(5)
+    return subscribers_with_distance_df
+    
+# проверка пользователей которые не общались. кросс левых на правых
+def non_tinder_users(city_events_data_df: DataFrame):
+    
+    out_user_contacts = city_events_data_df \
+        .select(col('event.message_from').alias('user_left'), col('event.message_to').alias('user_right')) \
+        .where("event_type ='message'")
+    
+    receive_user_contacts = city_events_data_df \
+        .select(col('event.message_to').alias('user_left'), col('event.message_from').alias('user_right')) \
+        .where("event_type ='message'")
+    non_tinder_users_df = (out_user_contacts.union(receive_user_contacts)).distinct().persist()
+    
+#    print('non_tinder_users_df')
+#    non_tinder_users_df.show(5)
+    return non_tinder_users_df
 
-def events_union_sender_reciever(events_path: str, sql) -> DataFrame:
-    df_sender_reciever = (sql
-            .read.parquet(f'{events_path}')
-            .selectExpr('event.message_from as sender','event.message_to as reciever') 
-            .where('sender is not null and reciever is not null')
-            )
-    
-    df_reciever_sender = (sql
-        .read.parquet(f'{events_path}')
-        .selectExpr('event.message_to as reciever','event.message_from as sender') 
-        .where('sender is not null and reciever is not null')
-        )
-    
-    union_dfs = (
-        df_sender_reciever
-        .union(df_reciever_sender)
-        .distinct()
-        ).persist()
-    
-# уникальные комбинации отправитель-получатель 
-    union_dfs = (union_dfs
-                 .withColumn('sender_reciever_existing', F.concat(union_dfs.sender, F.lit("-") , union_dfs.reciever))
-                 .drop('sender', 'reciever')
-                 )
-    
-    return union_dfs
 
 # Локальное время 
 def local_time_f(events_path: str, sql) -> DataFrame:
     times = (
-        sql.read.parquet(f'{events_path}')
-        .where('event_type = "message"')
+        sql.read.parquet(f'{events_path}').where('event_type = "message"')
         .selectExpr("event.message_from as user_id", "event.datetime", "event.message_id")
-        .where("datetime IS NOT NULL")
-    )
+        .where("datetime IS NOT NULL"))
+    
     window_t = Window().partitionBy('user_id').orderBy(F.col('datetime').desc())
 
-    times_w = (times
+    local_time_df = (times
             .withColumn("row_number", F.row_number().over(window_t))
             .filter(F.col('row_number')==1)
             .withColumn("TIME",F.col("datetime").cast("Timestamp"))
-            .selectExpr("user_id as user", "Time")
+            .selectExpr("user_id as user_left", "Time")
             ).persist()
     
-    return times_w
+#    print('local_time_df')
+#    local_time_df.show()
+    return local_time_df
 
-# Комбинации отправителя и получателя, подсчёт дистанции
-def combine_df(events_filtered_from: DataFrame, events_filtered_to: DataFrame, cities_df: DataFrame, events_subscription: DataFrame, union_dfs: DataFrame, local_time_df: DataFrame) -> DataFrame:
-
-    result = (
-        events_filtered_from
-        .crossJoin(events_filtered_to)
-        .withColumn("distance", F.lit(2) * F.lit(6371) * F.asin(
-        F.sqrt(
-            F.pow(F.sin((F.col('msg_lat_rad_from') - F.col('msg_lat_rad_to'))/F.lit(2)),2)
-            + F.cos(F.col("msg_lat_rad_from"))*F.cos(F.col("msg_lat_rad_to"))*
-            F.pow(F.sin((F.col('msg_lng_rad_from') - F.col('msg_lng_rad_to'))/F.lit(2)),2)
-        )))
-        .where("distance <= 1")
-        .withColumn("middle_point_lat_rad", (F.col('msg_lat_rad_from') + F.col('msg_lat_rad_to'))/F.lit(2))
-        .withColumn("middle_point_lng_rad", (F.col('msg_lng_rad_from') + F.col('msg_lng_rad_to'))/F.lit(2))
-        .selectExpr("message_id_from as user_left", "message_id_to as user_right",
-                    "middle_point_lat_rad", "middle_point_lng_rad")
-        .distinct()
-        ).persist()
+# сборка витрины рекомендации друзей
+def geo_activity_mart(city_events_data_df: DataFrame, local_time_df: DataFrame):
+    subscribers = subscribers_with_distance(city_events_data_df)
+    no_message_users = non_tinder_users(city_events_data_df)
     
-# Прикручивание городов
-    result = (
-        result
-        .crossJoin(cities_df)
-        .withColumn("distance", F.lit(2) * F.lit(6371) * F.asin(
-        F.sqrt(
-            F.pow(F.sin((F.col('middle_point_lat_rad') - F.col('lat_n_rad'))/F.lit(2)),2)
-            + F.cos(F.col("middle_point_lat_rad"))*F.cos(F.col("lat_n_rad"))*
-            F.pow(F.sin((F.col('middle_point_lng_rad') - F.col('lng_n_rad'))/F.lit(2)),2)
-        )))
-        .select("user_left", "user_right", "id", "city", "distance")
-        ).persist()
+    geo_activity_mart_df = (subscribers
+        .join(no_message_users, ['user_left', 'user_right'], 'leftanti') \
+        .withColumn("processed_dttm", current_date()) \
+        .join(local_time_df, 'user_left', how='left') \
+        .withColumn('local_time', date_format(col('Time'), 'HH:mm:ss')) \
+        .selectExpr('user_left', 'user_right', 'processed_dttm', 'id as zone_id', "local_time"))
     
-    window = Window().partitionBy("user_left", "user_right").orderBy(F.col('distance').asc())
-
-# Города с минимальной дистанцией
-    result = (
-        result
-        .withColumn("row_number", F.row_number().over(window))
-        .filter(F.col('row_number')==1)
-        .drop('row_number', "distance", "id")
-        .withColumn("timezone",F.concat(F.lit("Australia/"),F.col('city')))
-        .withColumnRenamed("city", "zone_id")
-        .withColumn('sender_reciever_all', F.concat(result.user_left, F.lit("-"), result.user_right))
-    ).persist()
-
-# Проверка что пользователи не пересекались
-    result = result.join(union_dfs, result.sender_reciever_all == union_dfs.sender_reciever_existing, "leftanti")
+#    print('geo_activity_mart_df')
+#    geo_activity_mart_df.show()
+    return geo_activity_mart_df
 
 
-        
-# Добавление subscriptions к результату и фильтр 
-    result = (
-        result
-        .join(events_subscription, result.user_left == events_subscription.user, "left")
-        .withColumnRenamed('chans', 'chans_left')
-        .drop('user')
-        .join(events_subscription, result.user_right == events_subscription.user, "left")
-        .withColumnRenamed('chans', 'chans_right')
-        .drop('user')
-        .withColumn('inter_chans', F.array_intersect(F.col('chans_left'), F.col('chans_right')))
-        .filter(F.size(F.col("inter_chans"))>1)
-        .where("user_left <> user_right")
-        .drop("inter_chans", "chans_left", "chans_right", "sender_reciever_all")
-        .withColumn("processed_dttm", F.current_timestamp())
-        .withColumn("timezone",F.concat(F.lit("Australia/"),F.col('zone_id')))
-        .join(local_time_df, result.user_left == local_time_df.user, "left")
-        .withColumn("local_time", F.from_utc_timestamp(F.col("Time"),F.col('timezone')))
-        .drop("timezone", 'user', 'Time')
-        .select("user_left", "user_right", "processed_dttm", "zone_id", "local_time")
-    )
-#    result.show()
-    return result
-
-def writer(df, output_path):
-    return df \
+# запись витрины
+def writer(geo_activity_mart_df, output_path):
+    return geo_activity_mart_df \
         .write \
         .mode('overwrite') \
         .parquet(f'{output_path}')
+
 
 if __name__ == "__main__":
         main()
